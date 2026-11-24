@@ -1,0 +1,554 @@
+import { User } from 'firebase/auth';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  writeBatch,
+} from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  Category,
+  CategoryColor,
+  Task,
+  TaskPriority,
+  ThemeMode,
+  UserProfile,
+  VALIDATION_LIMITS,
+  Workspace,
+  WorkspaceInvite,
+} from '../types';
+
+const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function randomToken(length: number, alphabet = INVITE_ALPHABET): string {
+  let out = '';
+  const arr = new Uint32Array(length);
+  crypto.getRandomValues(arr);
+  for (let i = 0; i < length; i++) {
+    out += alphabet[arr[i] % alphabet.length];
+  }
+  return out;
+}
+
+function sanitizeDisplayName(user: User, fallback = 'Корбар'): string {
+  const raw = (user.displayName || user.email?.split('@')[0] || fallback).trim();
+  return (raw || fallback).slice(0, VALIDATION_LIMITS.DISPLAY_NAME_MAX);
+}
+
+function sanitizePhoto(user: User): string {
+  return (user.photoURL || '').slice(0, 500);
+}
+
+function sanitizeEmail(user: User): string {
+  return (user.email || '').slice(0, 150);
+}
+
+async function generateUniqueInviteCode(): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = randomToken(6);
+    try {
+      const existing = await getDoc(doc(db, 'invites', code));
+      if (!existing.exists()) {
+        return code;
+      }
+    } catch {
+      return code;
+    }
+  }
+  return randomToken(8);
+}
+
+async function createPersonalWorkspace(user: User): Promise<string> {
+  const wsId = `ws_${user.uid.slice(0, 12)}_${randomToken(6).toLowerCase()}`;
+  const inviteCode = await generateUniqueInviteCode();
+  const ownerName = sanitizeDisplayName(user);
+  const ownerPhoto = sanitizePhoto(user);
+
+  const wsPath = `workspaces/${wsId}`;
+  try {
+    await setDoc(doc(db, 'workspaces', wsId), {
+      id: wsId,
+      name: 'Вазифаҳои муштарак',
+      ownerId: user.uid,
+      ownerName,
+      ownerPhoto,
+      partnerId: '',
+      partnerName: '',
+      partnerPhoto: '',
+      memberIds: [user.uid],
+      inviteCode,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, wsPath);
+  }
+
+  const invitePath = `invites/${inviteCode}`;
+  try {
+    await setDoc(doc(db, 'invites', inviteCode), {
+      code: inviteCode,
+      workspaceId: wsId,
+      ownerId: user.uid,
+      ownerName,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, invitePath);
+  }
+
+  return wsId;
+}
+
+export async function bootstrapUserAndWorkspace(user: User): Promise<string> {
+  const userPath = `users/${user.uid}`;
+  const userRef = doc(db, 'users', user.uid);
+  const displayName = sanitizeDisplayName(user);
+  const email = sanitizeEmail(user);
+  const photoURL = sanitizePhoto(user);
+
+  let userSnap;
+  try {
+    userSnap = await getDoc(userRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, userPath);
+  }
+
+  if (userSnap.exists()) {
+    const profile = userSnap.data() as UserProfile;
+    let workspaceId = profile.workspaceId;
+    let needsNewWorkspace = !workspaceId;
+
+    if (workspaceId) {
+      try {
+        const wsSnap = await getDoc(doc(db, 'workspaces', workspaceId));
+        if (!wsSnap.exists()) {
+          needsNewWorkspace = true;
+        } else {
+          const ws = wsSnap.data() as Workspace;
+          if (!ws.memberIds.includes(user.uid)) {
+            needsNewWorkspace = true;
+          } else {
+            // Keep owner/partner display snapshot fresh
+            if (ws.ownerId === user.uid && (ws.ownerName !== displayName || ws.ownerPhoto !== photoURL)) {
+              await updateDoc(doc(db, 'workspaces', workspaceId), {
+                ownerName: displayName,
+                ownerPhoto: photoURL,
+                updatedAt: serverTimestamp(),
+              });
+            } else if (
+              ws.partnerId === user.uid &&
+              (ws.partnerName !== displayName || ws.partnerPhoto !== photoURL)
+            ) {
+              await updateDoc(doc(db, 'workspaces', workspaceId), {
+                partnerName: displayName,
+                partnerPhoto: photoURL,
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+        }
+      } catch {
+        // User was removed from previous shared workspace; provision fresh personal workspace
+        needsNewWorkspace = true;
+      }
+    }
+
+    if (needsNewWorkspace) {
+      workspaceId = await createPersonalWorkspace(user);
+    }
+
+    try {
+      await updateDoc(userRef, {
+        displayName,
+        email,
+        photoURL,
+        workspaceId,
+        theme: profile.theme === 'dark' ? 'dark' : 'light',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, userPath);
+    }
+
+    return workspaceId;
+  }
+
+  const workspaceId = await createPersonalWorkspace(user);
+  try {
+    await setDoc(userRef, {
+      uid: user.uid,
+      displayName,
+      email,
+      photoURL,
+      workspaceId,
+      theme: 'light',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, userPath);
+  }
+
+  return workspaceId;
+}
+
+export async function updateUserTheme(uid: string, theme: ThemeMode): Promise<void> {
+  const path = `users/${uid}`;
+  try {
+    await updateDoc(doc(db, 'users', uid), {
+      theme,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export interface TaskInput {
+  title: string;
+  description: string;
+  priority: TaskPriority;
+  categoryId: string;
+  categoryName: string;
+  dueDate: string;
+  dueTime: string;
+  assignee: string;
+}
+
+export async function createTask(
+  workspace: Workspace,
+  user: User,
+  input: TaskInput
+): Promise<string> {
+  const taskId = `task_${Date.now().toString(36)}_${randomToken(5).toLowerCase()}`;
+  const path = `workspaces/${workspace.id}/tasks/${taskId}`;
+
+  const title = input.title.trim().slice(0, VALIDATION_LIMITS.TITLE_MAX);
+  const description = input.description.trim().slice(0, VALIDATION_LIMITS.DESCRIPTION_MAX);
+  const categoryId = input.categoryId.trim().slice(0, 64) || 'personal';
+  const categoryName = input.categoryName.trim().slice(0, VALIDATION_LIMITS.CATEGORY_NAME_MAX) || 'Шахсӣ';
+  const dueDate = VALIDATION_LIMITS.DUE_DATE_PATTERN.test(input.dueDate)
+    ? input.dueDate
+    : new Date().toISOString().slice(0, 10);
+  const dueTime = VALIDATION_LIMITS.DUE_TIME_PATTERN.test(input.dueTime) ? input.dueTime : '';
+  const createdByName = sanitizeDisplayName(user);
+
+  if (!title) {
+    throw new Error('Сарлавҳаи вазифа наметавонад холӣ бошад.');
+  }
+
+  try {
+    void setDoc(doc(db, 'workspaces', workspace.id, 'tasks', taskId), {
+      id: taskId,
+      workspaceId: workspace.id,
+      memberIds: workspace.memberIds,
+      title,
+      description,
+      priority: input.priority,
+      categoryId,
+      categoryName,
+      dueDate,
+      dueTime,
+      assignee: input.assignee || 'both',
+      completed: false,
+      completedBy: '',
+      completedByName: '',
+      createdBy: user.uid,
+      createdByName,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }).catch((error) => {
+      console.error('Task sync failed:', error);
+    });
+    return taskId;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function updateTask(
+  workspaceId: string,
+  taskId: string,
+  input: TaskInput
+): Promise<void> {
+  const path = `workspaces/${workspaceId}/tasks/${taskId}`;
+  const title = input.title.trim().slice(0, VALIDATION_LIMITS.TITLE_MAX);
+  const description = input.description.trim().slice(0, VALIDATION_LIMITS.DESCRIPTION_MAX);
+  const categoryId = input.categoryId.trim().slice(0, 64) || 'personal';
+  const categoryName = input.categoryName.trim().slice(0, VALIDATION_LIMITS.CATEGORY_NAME_MAX) || 'Шахсӣ';
+  const dueTime = VALIDATION_LIMITS.DUE_TIME_PATTERN.test(input.dueTime) ? input.dueTime : '';
+
+  if (!title) {
+    throw new Error('Сарлавҳаи вазифа наметавонад холӣ бошад.');
+  }
+
+  try {
+    await updateDoc(doc(db, 'workspaces', workspaceId, 'tasks', taskId), {
+      title,
+      description,
+      priority: input.priority,
+      categoryId,
+      categoryName,
+      dueDate: input.dueDate,
+      dueTime,
+      assignee: input.assignee || 'both',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function toggleTaskCompletion(
+  workspaceId: string,
+  task: Task,
+  user: User
+): Promise<void> {
+  const path = `workspaces/${workspaceId}/tasks/${task.id}`;
+  const nextCompleted = !task.completed;
+  try {
+    await updateDoc(doc(db, 'workspaces', workspaceId, 'tasks', task.id), {
+      completed: nextCompleted,
+      completedBy: nextCompleted ? user.uid : '',
+      completedByName: nextCompleted ? sanitizeDisplayName(user) : '',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteTask(workspaceId: string, taskId: string): Promise<void> {
+  const path = `workspaces/${workspaceId}/tasks/${taskId}`;
+  try {
+    await deleteDoc(doc(db, 'workspaces', workspaceId, 'tasks', taskId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function createCategory(
+  workspace: Workspace,
+  user: User,
+  name: string,
+  color: CategoryColor
+): Promise<string> {
+  const catId = `cat_${Date.now().toString(36)}_${randomToken(4).toLowerCase()}`;
+  const path = `workspaces/${workspace.id}/categories/${catId}`;
+  const cleanName = name.trim().slice(0, VALIDATION_LIMITS.CATEGORY_NAME_MAX);
+  if (!cleanName) {
+    throw new Error('Номи гурӯҳ наметавонад холӣ бошад.');
+  }
+  try {
+    await setDoc(doc(db, 'workspaces', workspace.id, 'categories', catId), {
+      id: catId,
+      workspaceId: workspace.id,
+      memberIds: workspace.memberIds,
+      name: cleanName,
+      color,
+      createdBy: user.uid,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return catId;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteCategory(workspaceId: string, categoryId: string): Promise<void> {
+  const path = `workspaces/${workspaceId}/categories/${categoryId}`;
+  try {
+    await deleteDoc(doc(db, 'workspaces', workspaceId, 'categories', categoryId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function updateWorkspaceName(workspaceId: string, name: string): Promise<void> {
+  const cleanName = name.trim().slice(0, VALIDATION_LIMITS.WORKSPACE_NAME_MAX);
+  if (!cleanName) {
+    throw new Error('Номи фазо наметавонад холӣ бошад.');
+  }
+  const path = `workspaces/${workspaceId}`;
+  try {
+    await updateDoc(doc(db, 'workspaces', workspaceId), {
+      name: cleanName,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function regenerateInviteCode(workspace: Workspace, user: User): Promise<string> {
+  const newCode = await generateUniqueInviteCode();
+  const newInvitePath = `invites/${newCode}`;
+  const ownerName = sanitizeDisplayName(user);
+
+  try {
+    await setDoc(doc(db, 'invites', newCode), {
+      code: newCode,
+      workspaceId: workspace.id,
+      ownerId: user.uid,
+      ownerName,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, newInvitePath);
+  }
+
+  const wsPath = `workspaces/${workspace.id}`;
+  try {
+    await updateDoc(doc(db, 'workspaces', workspace.id), {
+      inviteCode: newCode,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, wsPath);
+  }
+
+  if (workspace.inviteCode && workspace.inviteCode !== newCode) {
+    try {
+      await deleteDoc(doc(db, 'invites', workspace.inviteCode));
+    } catch {
+      // Ignore cleanup failure for old code
+    }
+  }
+
+  return newCode;
+}
+
+export async function joinWorkspaceByCode(user: User, rawCode: string): Promise<string> {
+  const code = rawCode.trim().toUpperCase();
+  if (
+    code.length < VALIDATION_LIMITS.INVITE_CODE_MIN ||
+    code.length > VALIDATION_LIMITS.INVITE_CODE_MAX ||
+    !VALIDATION_LIMITS.INVITE_CODE_PATTERN.test(code)
+  ) {
+    throw new Error('Рамзи даъват бояд аз 6 то 12 ҳарфу рақами лотинӣ иборат бошад.');
+  }
+
+  const inviteRef = doc(db, 'invites', code);
+  let inviteSnap;
+  try {
+    inviteSnap = await getDoc(inviteRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `invites/${code}`);
+  }
+
+  if (!inviteSnap.exists()) {
+    throw new Error('Рамзи даъват ёфт нашуд ё мӯҳлаташ гузаштааст.');
+  }
+
+  const invite = inviteSnap.data() as WorkspaceInvite;
+  if (invite.ownerId === user.uid) {
+    throw new Error('Шумо аллакай соҳиби ин фазои корӣ ҳастед.');
+  }
+
+  const partnerName = sanitizeDisplayName(user, 'Шарик');
+  const partnerPhoto = sanitizePhoto(user);
+
+  try {
+    await updateDoc(doc(db, 'workspaces', invite.workspaceId), {
+      partnerId: user.uid,
+      partnerName,
+      partnerPhoto,
+      memberIds: [invite.ownerId, user.uid],
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.toLowerCase().includes('permission')) {
+      throw new Error('Ин фазои корӣ аллакай ду нафар дорад ё дастрас нест.');
+    }
+    handleFirestoreError(error, OperationType.UPDATE, `workspaces/${invite.workspaceId}`);
+  }
+
+  try {
+    await updateDoc(doc(db, 'users', user.uid), {
+      workspaceId: invite.workspaceId,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+  }
+
+  return invite.workspaceId;
+}
+
+export async function removePartnerOrLeave(workspace: Workspace, user: User): Promise<string> {
+  const wsPath = `workspaces/${workspace.id}`;
+  try {
+    await updateDoc(doc(db, 'workspaces', workspace.id), {
+      partnerId: '',
+      partnerName: '',
+      partnerPhoto: '',
+      memberIds: [workspace.ownerId],
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, wsPath);
+  }
+
+  if (user.uid !== workspace.ownerId) {
+    const newWsId = await createPersonalWorkspace(user);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        workspaceId: newWsId,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
+    return newWsId;
+  }
+
+  return workspace.id;
+}
+
+export async function syncWorkspaceMemberIds(
+  workspace: Workspace,
+  tasks: Task[],
+  categories: Category[]
+): Promise<void> {
+  const targetKey = workspace.memberIds.join(',');
+  const staleTasks = tasks.filter((t) => t.memberIds.join(',') !== targetKey);
+  const staleCategories = categories.filter((c) => c.memberIds.join(',') !== targetKey);
+
+  if (staleTasks.length === 0 && staleCategories.length === 0) {
+    return;
+  }
+
+  const batch = writeBatch(db);
+  let count = 0;
+
+  for (const t of staleTasks) {
+    if (count >= 450) break;
+    batch.update(doc(db, 'workspaces', workspace.id, 'tasks', t.id), {
+      memberIds: workspace.memberIds,
+      updatedAt: serverTimestamp(),
+    });
+    count++;
+  }
+
+  for (const c of staleCategories) {
+    if (count >= 450) break;
+    batch.update(doc(db, 'workspaces', workspace.id, 'categories', c.id), {
+      memberIds: workspace.memberIds,
+      updatedAt: serverTimestamp(),
+    });
+    count++;
+  }
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `workspaces/${workspace.id}`);
+  }
+}
