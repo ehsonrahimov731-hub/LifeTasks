@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "865200885341",
+    "project_id": "lifetasks-18fd6",
+    "storage_bucket": "lifetasks-18fd6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:865200885341:android:1be90c22e34f15fef2c7b4",
+        "android_client_info": {
+          "package_name": "com.lifetasks.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "865200885341-8l1moq6hvoelorf8e0s8gnlgt21md06u.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.lifetasks.app",
+            "certificate_hash": "51fbef731cdb724291dfbe488e2eb6440b37a79d"
+          }
+        },
+        {
+          "client_id": "865200885341-besm827t6brb46ipk6lvtr5ivh146j48.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA8nWp6M2gyJHtLGSw3JxW0CQ9AXGc-FfU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "865200885341-besm827t6brb46ipk6lvtr5ivh146j48.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
