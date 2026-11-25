@@ -13,6 +13,7 @@
     "android:apk": "vite build && npx cap sync android && cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
+    "@capacitor-firebase/authentication": "^8.6.0",
     "@capacitor/android": "^8.6.2",
     "@capacitor/cli": "^8.6.2",
     "@capacitor/core": "^8.6.2",
@@ -23,7 +24,7 @@
     "dotenv": "^17.2.3",
     "eslint": "^10.15.0",
     "express": "^4.21.2",
-    "firebase": "^13.4.0",
+    "firebase": "^12.19.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
