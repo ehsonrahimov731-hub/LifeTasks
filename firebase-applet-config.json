@@ -1,12 +1,10 @@
 {
-  "projectId": "fresh-impulse-rv0ns",
-  "appId": "1:697427208836:web:d84d70429205b3012370d1",
-  "apiKey": "AIzaSyCE-Yu_WklPsXezs0w9bNGOEGhpl93F970",
-  "authDomain": "fresh-impulse-rv0ns.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-lifetasks-ee3cd2be-9f30-430f-8122-963162ecc401",
-  "storageBucket": "fresh-impulse-rv0ns.firebasestorage.app",
-  "messagingSenderId": "697427208836",
-  "measurementId": "",
-  "oAuthClientId": "697427208836-vscki0f3mnfg4s40620usce70igurmbr.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "projectId": "lifetasks-18fd6",
+  "appId": "1:865200885341:web:a77c69136c263b88f2c7b4",
+  "apiKey": "AIzaSyDbywl-w6D8olehLEHtglb1GsfWNG5TNps",
+  "authDomain": "lifetasks-18fd6.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "lifetasks-18fd6.firebasestorage.app",
+  "messagingSenderId": "865200885341",
+  "measurementId": "G-5FTFD2HLMN"
 }
